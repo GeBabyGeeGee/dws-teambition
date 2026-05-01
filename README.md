@@ -84,6 +84,39 @@ dws teambition delete-task --user-id <id> --task-id <tid> --project-id <pid>
 | `query-tasks` | Query tasks with TQL filter |
 | `archive-task` | Archive a task (move to trash) |
 | `delete-task` | Permanently delete a task |
+| `parse-excel` | Parse Excel R&D checklist, auto-classify tasks |
+| `generate-sync-payload` | Generate browser batch-create script |
+| `query-task-stats` | Query task statistics by type/priority |
+
+## Excel → Teambition Sync Workflow
+
+Reproducible pipeline to sync R&D process Excel files into Teambition:
+
+```bash
+# Step 1: Parse & Classify
+dws teambition parse-excel --file-path "研发流程清单.xlsx"
+# Output: 92 tasks classified into 9 types (milestone/risk/design/qaqc/...)
+
+# Step 2: Create Project
+dws teambition create-project --user-id <id> --name "项目名称"
+
+# Step 3: Setup Task Groups
+# (Use Playwright browser automation to create 16 stage groups)
+# See .sisyphus/workflows/excel-sync.md for detailed browser script
+
+# Step 4: Batch Sync
+dws teambition generate-sync-payload \
+  --tasks-json '<step1-output>' \
+  --project-id <pid> \
+  --tasklist-id <tid> \
+  --stage-map-json '{"1":"xxx","2":"yyy",...}'
+# Inject generated JS into browser to create all 92 tasks
+
+# Step 5: Verify
+dws teambition query-task-stats --user-id <id> --project-id <pid>
+```
+
+Full workflow docs: [`.sisyphus/workflows/excel-sync.md`](.sisyphus/workflows/excel-sync.md)
 
 ## Task Priority
 

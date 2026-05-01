@@ -1,13 +1,13 @@
 {
   "name": "teambition",
-  "version": "0.1.0",
-  "description": "Teambition project management via DingTalk OpenAPI - create projects, tasks, query with TQL, archive and delete",
+  "version": "0.2.0",
+  "description": "Teambition project management via DingTalk OpenAPI. Supports Excel-to-Teambition reproducible sync workflow with auto task classification.",
   "type": "user",
   "minCLIVersion": "v1.0.18",
   "mcpServers": {
     "teambition": {
       "type": "stdio",
-      "command": "${DWS_PLUGIN_ROOT}/bin/server",
+      "command": "${DWS_PLUGIN_ROOT}/bin/server.exe",
       "args": [],
       "env": {
         "DWS_CLIENT_ID": "${DWS_CLIENT_ID}",
