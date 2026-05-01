@@ -1,0 +1,12 @@
+{
+  "name": "dws-teambition",
+  "version": "0.1.0",
+  "description": "DWS plugin for Teambition project management via DingTalk OpenAPI",
+  "type": "module",
+  "scripts": {
+    "build": "bun build --compile --target=bun-linux-x64 --target=bun-windows-x64 --target=bun-darwin-x64 --target=bun-darwin-arm64 src/server.ts --outfile bin/server"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}

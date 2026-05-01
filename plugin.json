@@ -1,0 +1,24 @@
+{
+  "name": "teambition",
+  "version": "0.1.0",
+  "description": "Teambition project management via DingTalk OpenAPI - create projects, tasks, query with TQL, archive and delete",
+  "type": "user",
+  "minCLIVersion": "v1.0.18",
+  "mcpServers": {
+    "teambition": {
+      "type": "stdio",
+      "command": "${DWS_PLUGIN_ROOT}/bin/server",
+      "args": [],
+      "env": {
+        "DWS_CLIENT_ID": "${DWS_CLIENT_ID}",
+        "DWS_CLIENT_SECRET": "${DWS_CLIENT_SECRET}"
+      }
+    }
+  },
+  "build": {
+    "command": "bun build --compile src/server.ts --outfile bin/server",
+    "output": "bin/server"
+  },
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}
