@@ -25,13 +25,13 @@ npm i -g dingtalk-workspace-cli
 ### 3. Install the Plugin
 
 ```bash
-dws plugin install --git https://github.com/YOUR_USER/dws-teambition
+dws plugin install --git https://github.com/GeBabyGeeGee/dws-teambition
 ```
 
 Or locally:
 
 ```bash
-git clone https://github.com/YOUR_USER/dws-teambition
+git clone https://github.com/GeBabyGeeGee/dws-teambition
 dws plugin dev ./dws-teambition
 ```
 
@@ -115,7 +115,7 @@ DWS CLI and this plugin work on **Windows, macOS, and Linux**.
 ## Building from Source
 
 ```bash
-git clone https://github.com/YOUR_USER/dws-teambition
+git clone https://github.com/GeBabyGeeGee/dws-teambition
 cd dws-teambition
 npm install
 bun build --compile src/server.ts --outfile bin/server
