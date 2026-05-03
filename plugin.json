@@ -1,6 +1,6 @@
 {
   "name": "teambition",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Teambition project management via DingTalk OpenAPI. Supports full task lifecycle (CRUD + batch update), Excel-to-Teambition reproducible sync workflow, and browser API payload generation for stage/type changes.",
   "type": "user",
   "minCLIVersion": "v1.0.18",
