@@ -1,6 +1,6 @@
 ---
 name: teambition
-description: Manage Teambition projects/tasks via DingTalk OpenAPI. Supports reproducible Excel-to-Teambition sync workflow with auto task classification.
+description: Manage Teambition projects/tasks via DingTalk OpenAPI. Supports full task lifecycle, Excel-to-Teambition sync, and browser API for stage/type changes.
 cli_version: ">=v1.0.18"
 ---
 
@@ -17,17 +17,94 @@ cli_version: ">=v1.0.18"
 
 ## Commands
 
+### Project & Org
 | Command | Description |
 |---------|-------------|
 | `get-organization` | Get Teambition organization ID |
 | `create-project` | Create project |
-| `create-task` | Create task (goes to default group) |
-| `query-tasks` | Query tasks with TQL filter |
+
+### Task CRUD
+| Command | Description |
+|---------|-------------|
+| `create-task` | Create task (supports stageId, taskTypeId, customFields, startDate, participants, parentTask) |
+| `get-task` | Get single task details |
+| `query-tasks` | Query tasks with TQL filter, pagination |
 | `archive-task` | Archive task |
 | `delete-task` | Delete task |
+
+### Task Update (Granular APIs)
+| Command | Description | API Endpoint |
+|---------|-------------|-------------|
+| `update-task-content` | Update task title | `PUT .../tasks/{tid}/contents` |
+| `update-task-executor` | Update task executor | `PUT .../tasks/{tid}/executors` |
+| `update-task-due-date` | Update due date | `PUT .../tasks/{tid}/dueDates` |
+| `update-task-start-date` | Update start date | `PUT .../tasks/{tid}/startDates` |
+| `update-task-priority` | Update priority | `PUT .../tasks/{tid}/priorities` |
+| `update-task-note` | Update note | `PUT .../tasks/{tid}/notes` |
+| `update-task-workflow-status` | Update workflow status (mark as done) | `PUT .../tasks/{tid}/taskflowStatuses` |
+| `update-task-custom-fields` | Update custom field values | `PUT .../tasks/{tid}/customFields` |
+| `update-task-participants` | Add/remove participants | `PUT .../tasks/{tid}/involveMembers` |
+
+### Task Update (Batch)
+| Command | Description |
+|---------|-------------|
+| `update-task-batch` | Batch update multiple fields in one call |
+
+### Task Stage & Type (Browser API)
+| Command | Description |
+|---------|-------------|
+| `generate-move-task-stage-payload` | Generate JS to move task to different stage |
+| `generate-change-task-type-payload` | Generate JS to change task type/template |
+
+### Task Type Definition (定义任务类型)
+| Command | Description |
+|---------|-------------|
+| `query-task-types` | List existing task types via DingTalk aggregation |
+| `generate-query-task-types-payload` | Browser JS — fetch full type info (name/icon/fields) |
+| `generate-create-task-type-payload` | Browser JS — create new task type |
+| `generate-setup-standard-task-types-payload` | Browser JS — batch-create 9 R&D types |
+
+### Query & Stats
+| Command | Description |
+|---------|-------------|
+| `query-task-workflow-statuses` | List available workflow statuses |
+| `query-project-stages` | List project stages with task counts |
+| `query-task-stats` | Task statistics by type/priority |
+
+### Excel Sync
+| Command | Description |
+|---------|-------------|
 | `parse-excel` | Parse Excel R&D process file, auto-classify tasks |
 | `generate-sync-payload` | Generate browser batch-create script |
-| `query-task-stats` | Query task statistics by type/priority |
+| `query-task-stats` | Verify sync results |
+
+---
+
+## Quick Example: Modify a Task
+
+```bash
+# Update task title
+dws teambition update-task-content --user-id <id> --task-id <tid> --content "New Title"
+
+# Reassign task
+dws teambition update-task-executor --user-id <id> --task-id <tid> --executor-id <uid>
+
+# Change priority
+dws teambition update-task-priority --user-id <id> --task-id <tid> --priority 2
+
+# Batch update multiple fields at once
+dws teambition update-task-batch \
+  --user-id <id> \
+  --task-id <tid> \
+  --content "Updated Title" \
+  --priority 1 \
+  --executor-id <uid> \
+  --due-date "2026-12-31T18:00:00Z"
+
+# Mark task as done (get status ID first)
+dws teambition query-task-workflow-statuses --user-id <id> --project-id <pid>
+dws teambition update-task-workflow-status --user-id <id> --task-id <tid> --taskflow-status-id <sid>
+```
 
 ---
 
@@ -43,121 +120,181 @@ Output: Teambition project with 16 stage groups and classified tasks
 | Condition | Type | Priority |
 |-----------|------|----------|
 | Contains "风险"/"评估" | `[risk]` | 2 (Critical) |
-| "√" + contains "评审"/"确认"/"签样"/"报告" | `[milestone]` | 2 |
-| "√" other | `[milestone]` | 2 |
-| Contains "合同"/"协议"/"专利" | `[legal]` | 0 (Normal) |
-| Contains "ECR"/"变更" | `[change]` | 1 (Urgent) |
-| Contains "设计"/"图"/"方案"/"效果图"/"原理图" | `[design]` | 0 |
-| Contains "测试"/"检验"/"验证"/"认证" | `[qaqc]` | 1 |
+| KeyNode + "评审"/"确认"/"签样"/"报告" | `[milestone]` | 2 |
+| KeyNode other | `[milestone]` | 2 |
+| Contains "合同"/"协议"/"专利" | `[legal]` | 0 |
+| Contains "ECR"/"变更" | `[change]` | 1 |
+| Design keywords | `[design]` | 0 |
+| QA/QC keywords | `[qaqc]` | 1 |
 | Contains "整改"/"改善" | `[improve]` | 0 |
-| Contains "需求"/"要求"/"立项" | `[requirement]` | 0 |
-| Other | `[task]` | -10 (Low) |
+| Requirements keywords | `[requirement]` | 0 |
+| Other | `[task]` | -10 |
 
-### Execution Steps
+### Steps
 
-#### Step 1: Parse Excel
+```bash
+# Step 1: Parse & Classify
+dws teambition parse-excel --file-path "研发流程清单.xlsx"
 
-```
-dws teambition parse-excel --file-path "/path/to/file.xlsx"
-```
+# Step 2: Create Project
+dws teambition create-project --user-id <id> --name "项目名称"
 
-Returns: JSON with classified task list (92 tasks, 16 stages)
+# Step 3: Setup Task Groups (Browser required)
+# Use Playwright to create 16 stage groups and capture stage IDs
 
-#### Step 2: Create Teambition Project
-
-```
-dws teambition create-project --user-id <userId> --name "Project Name"
-```
-
-Save the returned `projectId`, `rootCollectionId`, `defaultCollectionId`.
-
-#### Step 3: Create Task Groups (Browser Required)
-
-Why browser: DingTalk OpenAPI does NOT support task group/stage management.
-Use Playwright to automate:
-
-1. Login to `https://www.teambition.com/project/{projectId}`
-2. Click "新建任务列表" button, create 16 groups
-3. Call `GET /api/tasklists?_projectId={projectId}` to get stage IDs
-4. Extract each stage's `_id`
-
-16 stage names:
-```
-1.项目立项  2.外观设计  3.风险评估  4.设计验证标准
-5.电子设计  6.结构设计  7.专利申请  8.功能手板评审
-9.设计开模  10.TO-Tn验证  11.包装设计  12.试产
-13.设计变更  14.品控管理  15.产品质检  16.持续改善
-```
-
-#### Step 4: Generate & Execute Batch Sync
-
-```
+# Step 4: Batch Sync
 dws teambition generate-sync-payload \
   --tasks-json '<step1-output>' \
-  --project-id <projectId> \
-  --tasklist-id <defaultGroupListId> \
-  --stage-map-json '{"1":"stageId1","2":"stageId2",...}'
+  --project-id <pid> \
+  --tasklist-id <tid> \
+  --stage-map-json '{"1":"xxx","2":"yyy",...}'
+
+# Step 5: Verify
+dws teambition query-task-stats --user-id <id> --project-id <pid>
 ```
 
-Inject generated JS into browser:
+---
 
-```
-// Paste in F12 Console, or use Playwright page.evaluate()
+## Browser API: Stage & Type Changes
+
+DingTalk OpenAPI does NOT support task stage movement or type (templateId) changes.
+Use the generated browser scripts:
+
+```bash
+# Move task to a different stage
+dws teambition generate-move-task-stage-payload \
+  --task-id <tid> \
+  --project-id <pid> \
+  --target-stage-id <sid>
+
+# Change task type
+dws teambition generate-change-task-type-payload \
+  --task-id <tid> \
+  --project-id <pid> \
+  --template-id <templateId>
 ```
 
-#### Step 5: Verify
+Paste the generated JS into browser console (F12) or use with Playwright `page.evaluate()`.
 
+---
+
+## 定义任务类型 (Task Type Definition Workflow)
+
+Task types (`scenariofieldconfigId` / `templateId`) determine what custom fields and workflows a task has. The DingTalk OpenAPI does NOT expose task type creation — use the browser API workflow below.
+
+### Discovery: List Existing Types
+
+```bash
+# Quick aggregation (no browser, uses DingTalk API)
+dws teambition query-task-types --user-id <id> --project-id <pid>
+
+# Full details (name, icon, custom fields) — browser required
+dws teambition generate-query-task-types-payload --project-id <pid>
+# Run output JS in F12 console or via Playwright
 ```
-dws teambition query-task-stats --user-id <id> --project-id <projectId>
+
+### Create One Task Type
+
+```bash
+dws teambition generate-create-task-type-payload \
+  --project-id <pid> \
+  --name "需求" \
+  --icon "story" \
+  --base-template-id <existing-type-id>   # optional: inherits fields/workflow
 ```
+
+Run output JS in browser. Returns the new `scenariofieldconfigId`.
+
+### Batch Setup: 9 Standard R&D Types
+
+```bash
+# Default: 任务/需求/风险/审核/设计/质量/合同/变更/改善
+dws teambition generate-setup-standard-task-types-payload --project-id <pid>
+
+# Custom set
+dws teambition generate-setup-standard-task-types-payload \
+  --project-id <pid> \
+  --custom-types '[{"name":"缺陷","icon":"bug"},{"name":"需求","icon":"story"}]'
+```
+
+The script:
+- Skips types that already exist (idempotent)
+- Reuses the project's default `taskflowId`
+- Returns `{name → scenariofieldconfigId}` map
+
+### Use New Types
+
+After creation, pass the `scenariofieldconfigId` when creating tasks:
+
+```bash
+dws teambition create-task \
+  --user-id <id> --project-id <pid> \
+  --content "新需求 - 用户登录优化" \
+  --task-type-id <scenariofieldconfigId>
+```
+
+Or change existing task's type:
+
+```bash
+dws teambition generate-change-task-type-payload \
+  --task-id <tid> --project-id <pid> \
+  --template-id <new-scenariofieldconfigId>
+```
+
+### Common Icons
+
+`task` (任务), `bug` (缺陷), `story` (需求), `milestone` (里程碑), `risk` (风险), `design` (设计), `qaqc` (质量), `legal` (合同), `change` (变更), `improve` (改善)
 
 ---
 
 ## Playwright Automation Reference
 
-When using as AI Agent with Playwright MCP:
-
-```
+```javascript
 // 1. Navigate
 page.goto('https://www.teambition.com/project/{pid}')
 
-// 2. Create task groups
-for each name in [...16 names...]:
-  click button("新建任务列表")
-  fill input[placeholder="列表名称"] with name
+// 2. Create task groups (16 stages)
+for (const name of [...16 names...]) {
+  click "新建任务列表"
+  fill placeholder="列表名称" with name
   press Enter
-  press Escape
+}
 
 // 3. Get stage IDs
-page.evaluate(async () => {
-  const r = await fetch('/api/tasklists?_projectId={pid}')
+const stages = await page.evaluate(async (pid) => {
+  const r = await fetch(`/api/tasklists?_projectId=${pid}`)
   const data = await r.json()
   return Object.fromEntries(
     data[0].hasStages
       .filter(s => /^\d+\./.test(s.name))
       .map(s => [s.name.match(/^(\d+)/)[1], s._id])
   )
-})
+}, PID)
 
-// 4. Batch create tasks
-page.evaluate(async (tasks, stages, pid, tid) => {
-  for (const t of tasks) {
-    await fetch('/api/tasks', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        content:t.content, _projectId:pid, _tasklistId:tid,
-        _stageId:stages[t.sn], priority:t.priority, note:t.note
-      })
-    })
-  }
-}, TASKS, stages, PID, TID)
+// 4. Move task to different stage
+await page.evaluate(async (taskId, projectId, stageId) => {
+  await fetch('https://www.teambition.com/api/task/update', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ _id: taskId, _projectId: projectId, _stageId: stageId })
+  })
+}, TASK_ID, PROJECT_ID, STAGE_ID)
+
+// 5. Change task type
+await page.evaluate(async (taskId, projectId, templateId) => {
+  await fetch('https://www.teambition.com/api/task/update', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ _id: taskId, _projectId: projectId, templateId })
+  })
+}, TASK_ID, PROJECT_ID, templateId)
 ```
 
 ## Task Priority Reference
 
 | Value | Meaning |
 |-------|---------|
-| `2` | Critical (milestones, risks) |
-| `1` | Urgent (ECO, QA/QC) |
-| `0` | Normal (design, legal, requirements) |
-| `-10` | Low (general tasks) |
+| `-10` | Low |
+| `0` | Normal (default) |
+| `1` | Urgent |
+| `2` | Critical |

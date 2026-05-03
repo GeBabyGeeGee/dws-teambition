@@ -66,7 +66,7 @@ Reproducible pipeline to sync an R&D process Excel checklist into a Teambition p
 ## Dependencies
 
 - DWS CLI v1.0.18+
-- dws-teambition plugin v0.2.0+
+- dws-teambition plugin v0.3.0+
 - Python 3 + openpyxl
 - Playwright (for browser steps)
 

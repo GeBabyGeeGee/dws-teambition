@@ -3,3 +3,4 @@ bin/
 .env
 *.log
 .DS_Store
+.test-state.json
