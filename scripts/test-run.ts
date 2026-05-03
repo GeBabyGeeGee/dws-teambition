@@ -260,6 +260,51 @@ async function step7_queryTaskTypes() {
   info("and execute the JS in browser at https://www.teambition.com/project/" + state.projectId);
 }
 
+async function step8_projectManagement() {
+  info("Step 8: project management (list, join, members, status)");
+  if (!state.projectId) warn("No projectId in state — using query only");
+
+  // 8a. query_projects (search by name)
+  info("8a: query_projects");
+  const projects = await api(
+    "POST",
+    `/v1.0/project/users/${USER_ID}/projects/query`,
+    undefined,
+    { name: "[DWS-TEST]", maxResults: "10" }
+  );
+  const found = (projects.result || []).map((p: any) => `  ${p.projectId}: ${p.name}  (archived=${p.isArchived})`).join("\n");
+  ok(`query_projects: ${(projects.result || []).length} projects found\n${found || "  (none)"}`);
+
+  // 8b. get_user_join_projects
+  info("8b: get_user_join_projects");
+  const joined = await api("GET", `/v1.0/project/users/${USER_ID}/joinProjects`);
+  ok(`get_user_join_projects: ${(joined.result || []).length} joined projects`);
+
+  // 8c. get_project_members
+  if (state.projectId) {
+    info("8c: get_project_members");
+    const members = await api(
+      "GET",
+      `/v1.0/project/users/${USER_ID}/projects/${state.projectId}/members`,
+      undefined,
+      { maxResults: "50" }
+    );
+    const mlist = (members.result || []).map((m: any) => `  userId=${m.userId} role=${m.role} (0=member,1=admin,2=owner)`).join("\n");
+    ok(`get_project_members: ${(members.result || []).length} members\n${mlist || "  (none)"}`);
+  }
+
+  // 8d. query_project_status
+  if (state.projectId) {
+    info("8d: query_project_status");
+    const statuses = await api(
+      "GET",
+      `/v1.0/project/users/${USER_ID}/projects/${state.projectId}/statuses`
+    );
+    const slist = (statuses.result || []).map((s: any) => `  ${s.name}: degree=${s.degree} (normal/risky/urgent)`).join("\n");
+    ok(`query_project_status: ${(statuses.result || []).length} status entry/entries\n${slist || "  (none — publish project overview first)"}`);
+  }
+}
+
 // ---- Dispatcher ----
 
 const step = process.argv[2] || "all";
@@ -271,6 +316,7 @@ try {
   if (step === "5" || step === "all") await step5_updateTask();
   if (step === "6" || step === "all") await step6_workflowStatus();
   if (step === "7" || step === "all") await step7_queryTaskTypes();
+  if (step === "8" || step === "all") await step8_projectManagement();
   console.log(`\n${COLOR.green}DONE${COLOR.reset}`);
 } catch (e) {
   fail(`${e}`);

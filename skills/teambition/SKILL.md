@@ -17,11 +17,17 @@ cli_version: ">=v1.0.18"
 
 ## Commands
 
-### Project & Org
+### Project & Org (8)
 | Command | Description |
 |---------|-------------|
 | `get-organization` | Get Teambition organization ID |
 | `create-project` | Create project |
+| `query-projects` | Query all projects with fuzzy search |
+| `get-user-join-projects` | Get joined project IDs |
+| `get-project-members` | List project members and roles |
+| `add-project-members` | Batch add members |
+| `remove-project-members` | Batch remove members |
+| `query-project-status` | Query project overview status |
 
 ### Task CRUD
 | Command | Description |

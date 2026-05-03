@@ -112,11 +112,17 @@ dws teambition delete-task --user-id <id> --task-id <tid> --project-id <pid>
 
 ## Commands
 
-### Project & Org (2)
+### Project & Org (8)
 | Command | Description |
 |---------|-------------|
 | `get-organization` | Get Teambition organization ID |
 | `create-project` | Create a new project |
+| `query-projects` | Query all projects (name fuzzy search + pagination) |
+| `get-user-join-projects` | Get IDs of projects user joined |
+| `get-project-members` | List project members and roles |
+| `add-project-members` | Batch add members (max 10 at once) |
+| `remove-project-members` | Batch remove members |
+| `query-project-status` | Query project overview status (normal/risky/urgent) |
 
 ### Task CRUD (5)
 | Command | Description |

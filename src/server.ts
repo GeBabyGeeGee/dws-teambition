@@ -198,6 +198,85 @@ const TOOLS = [
     },
   },
 
+  // --- Project Management ---
+  {
+    name: "query_projects",
+    description: "查询企业下的所有项目，支持名称模糊搜索和分页。API: POST .../projects/query?name=...",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string", description: "操作者的钉钉 userId" },
+        name: { type: "string", description: "项目名称模糊搜索（可选）" },
+        max_results: { type: "number", description: "每页最大数量，默认 50，最大 300" },
+        next_token: { type: "string", description: "分页游标（可选）" },
+      },
+      required: ["user_id"],
+    },
+  },
+  {
+    name: "get_user_join_projects",
+    description: "获取当前用户加入的所有项目 ID 列表（仅返回项目 ID），轻量查询。API: GET .../joinProjects",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string", description: "操作者的钉钉 userId" },
+        max_results: { type: "number", description: "每页最大数量（可选，不传返回全部）" },
+      },
+      required: ["user_id"],
+    },
+  },
+  {
+    name: "get_project_members",
+    description: "查询项目成员列表，返回 userId、角色等信息。API: GET .../projects/{pid}/members",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string", description: "操作者的钉钉 userId" },
+        project_id: { type: "string", description: "项目 ID" },
+        max_results: { type: "number", description: "每页最大数量，默认 50" },
+      },
+      required: ["user_id", "project_id"],
+    },
+  },
+  {
+    name: "add_project_members",
+    description: "批量添加项目成员（每次最多 10 个）。API: POST .../projects/{pid}/members",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string", description: "操作者的钉钉 userId" },
+        project_id: { type: "string", description: "项目 ID" },
+        member_user_ids: { type: "array", items: { type: "string" }, description: "要添加的用户 userId 列表（最多 10 个）" },
+      },
+      required: ["user_id", "project_id", "member_user_ids"],
+    },
+  },
+  {
+    name: "remove_project_members",
+    description: "批量删除项目成员。API: POST .../projects/{pid}/members/remove",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string", description: "操作者的钉钉 userId" },
+        project_id: { type: "string", description: "项目 ID" },
+        member_user_ids: { type: "array", items: { type: "string" }, description: "要删除的用户 userId 列表" },
+      },
+      required: ["user_id", "project_id", "member_user_ids"],
+    },
+  },
+  {
+    name: "query_project_status",
+    description: "查询项目概览状态（进度状态、正常/风险/紧急）。API: GET .../projects/{pid}/statuses",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string", description: "操作者的钉钉 userId" },
+        project_id: { type: "string", description: "项目 ID" },
+      },
+      required: ["user_id", "project_id"],
+    },
+  },
+
   // --- Task CRUD ---
   {
     name: "create_task",
@@ -610,6 +689,80 @@ async function handleGetOrganization(args: Record<string, unknown>) {
 
 async function handleCreateProject(args: Record<string, unknown>) {
   const data = await apiCall("POST", `/v1.0/project/users/${args.user_id}/projects`, { name: args.name });
+  return formatResponse(data);
+}
+
+// ============================================================================
+// Handlers - Project Management
+// ============================================================================
+
+async function handleQueryProjects(args: Record<string, unknown>) {
+  const params: Record<string, string> = {};
+  if (args.name) params.name = args.name as string;
+  if (args.max_results) params.maxResults = String(args.max_results);
+  else params.maxResults = "50";
+  if (args.next_token) params.nextToken = args.next_token as string;
+
+  const data = await apiCall(
+    "POST",
+    `/v1.0/project/users/${args.user_id}/projects/query`,
+    undefined,
+    params
+  );
+  return formatResponse(data);
+}
+
+async function handleGetUserJoinProjects(args: Record<string, unknown>) {
+  const params: Record<string, string> = {};
+  if (args.max_results) params.maxResults = String(args.max_results);
+
+  const data = await apiCall(
+    "GET",
+    `/v1.0/project/users/${args.user_id}/joinProjects`,
+    undefined,
+    params
+  );
+  return formatResponse(data);
+}
+
+async function handleGetProjectMembers(args: Record<string, unknown>) {
+  const params: Record<string, string> = {};
+  if (args.max_results) params.maxResults = String(args.max_results);
+  else params.maxResults = "50";
+
+  const data = await apiCall(
+    "GET",
+    `/v1.0/project/users/${args.user_id}/projects/${args.project_id}/members`,
+    undefined,
+    params
+  );
+  return formatResponse(data);
+}
+
+async function handleAddProjectMembers(args: Record<string, unknown>) {
+  const data = await apiCall(
+    "POST",
+    `/v1.0/project/users/${args.user_id}/projects/${args.project_id}/members`,
+    { userIds: args.member_user_ids }
+  );
+  return formatResponse(data);
+}
+
+async function handleRemoveProjectMembers(args: Record<string, unknown>) {
+  const data = await apiCall(
+    "POST",
+    `/v1.0/project/users/${args.user_id}/projects/${args.project_id}/members/remove`,
+    { userIds: args.member_user_ids }
+  );
+  return formatResponse(data);
+}
+
+async function handleQueryProjectStatus(args: Record<string, unknown>) {
+  const data = await apiCall(
+    "GET",
+    `/v1.0/project/users/${args.user_id}/projects/${args.project_id}/statuses`,
+    undefined
+  );
   return formatResponse(data);
 }
 
@@ -1517,6 +1670,12 @@ function errorResponse(msg: string) {
 const HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
   get_organization: handleGetOrganization,
   create_project: handleCreateProject,
+  query_projects: handleQueryProjects,
+  get_user_join_projects: handleGetUserJoinProjects,
+  get_project_members: handleGetProjectMembers,
+  add_project_members: handleAddProjectMembers,
+  remove_project_members: handleRemoveProjectMembers,
+  query_project_status: handleQueryProjectStatus,
   create_task: handleCreateTask,
   get_task: handleGetTask,
   query_tasks: handleQueryTasks,
