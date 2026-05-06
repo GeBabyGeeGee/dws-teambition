@@ -21,8 +21,8 @@ export async function handleGenerateMoveTaskStagePayload(args: Record<string, un
   if (TASKLIST_ID) body._tasklistId = TASKLIST_ID;
 
   try {
-    const res = await fetch("https://www.teambition.com/api/task/update", {
-      method: "POST",
+    const res = await fetch("https://www.teambition.com/api/tasks/" + TASK_ID, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
@@ -37,7 +37,7 @@ export async function handleGenerateMoveTaskStagePayload(args: Record<string, un
 `;
 
   return formatResponse({
-    instructions: "Browser-executable script. Use with Playwright page.evaluate() or F12 console.",
+    instructions: "Browser-executable script. Run via opencli browser eval or F12 console.",
     task_id: taskId,
     project_id: projectId,
     target_stage_id: targetStageId,
@@ -57,8 +57,8 @@ export async function handleGenerateChangeTaskTypePayload(args: Record<string, u
   const TEMPLATE_ID = "${templateId}";
 
   try {
-    const res = await fetch("https://www.teambition.com/api/task/update", {
-      method: "POST",
+    const res = await fetch("https://www.teambition.com/api/tasks/" + TASK_ID, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ _id: TASK_ID, _projectId: PROJECT_ID, templateId: TEMPLATE_ID }),
     });
@@ -73,7 +73,7 @@ export async function handleGenerateChangeTaskTypePayload(args: Record<string, u
 `;
 
   return formatResponse({
-    instructions: "Browser-executable script. Use with Playwright page.evaluate() or F12 console.",
+    instructions: "Browser-executable script. Run via opencli browser eval or F12 console.",
     task_id: taskId,
     project_id: projectId,
     template_id: templateId,
@@ -113,7 +113,7 @@ export async function handleGenerateSyncPayload(args: Record<string, unknown>) {
 `;
 
   return formatResponse({
-    instructions: "Browser-executable script. Use with Playwright page.evaluate() or F12 console.",
+    instructions: "Browser-executable script. Run via opencli browser eval or F12 console.",
     total_tasks: tasks.length,
     stage_count: Object.keys(stageMap).length,
     js_payload: jsPayload,
@@ -283,6 +283,53 @@ export async function handleGenerateBatchCreateTasklistsPayload(args: Record<str
       "Each tasklist gets one default stage named '未分类'",
       "Returns a map of {name → {tasklistId, stageId}}",
       "200ms delay between creations to avoid rate limiting",
+    ],
+  });
+}
+
+export async function handleGenerateOpencliSetupPayload(args: Record<string, unknown>) {
+  const projectId = args.project_id as string;
+  const namesJson = (args.tasklist_names_json as string) || '["设计验证","系统验证","量产交付"]';
+
+  const setupGuide = `# Teambition Project Setup via opencli Browser
+
+## Step 1: Open project
+opencli browser open "https://www.teambition.com/project/${projectId}"
+
+## Step 2: Create task list groups
+opencli browser eval "(async () => {
+  const PID = '${projectId}';
+  const names = ${namesJson};
+  const results = {};
+  for (const name of names) {
+    const r = await fetch('https://www.teambition.com/api/tasklists', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({title: name, _projectId: PID, isArchived: false}),
+    });
+    const d = await r.json();
+    results[name] = {tasklistId: d._id, stageId: d.stageIds?.[0]||null};
+  }
+  return JSON.stringify(results);
+})()"
+
+## Step 3: Create tasks in correct stages
+dws teambition create-task --user-id <uid> --project-id ${projectId} --content "Task" --stage-id <stageId-from-step2>
+
+## Step 4: Mark tasks as done
+dws teambition query-task-workflow-statuses --user-id <uid> --project-id ${projectId}
+dws teambition update-task-workflow-status --user-id <uid> --task-id <tid> --taskflow-status-id <done-status-id>
+`;
+
+  return formatResponse({
+    instructions: "Complete opencli-based Teambition project setup workflow. opencli reuses Chrome login session - no credentials needed.",
+    project_id: projectId,
+    setup_guide: setupGuide,
+    notes: [
+      "opencli browser eval executes JS in the Teambition page context, reusing your login session",
+      "Create tasks with --stage-id to place them in the correct task list from the start",
+      "Task movement between stages is NOT supported by the DingTalk API - plan stage assignments upfront",
+      "The delete+recreate workaround for moving tasks loses task history (comments, attachments)",
     ],
   });
 }

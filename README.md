@@ -43,7 +43,15 @@ export DWS_CLIENT_ID=<your-app-key>
 export DWS_CLIENT_SECRET=<your-app-secret>
 ```
 
-### 5. Start Managing
+### 5. (Optional) Install opencli for Browser Automation
+
+```bash
+npm install -g @jackwener/opencli
+```
+
+opencli reuses your Chrome login session to automate Teambition web operations without needing Playwright.
+
+### 6. Start Managing
 
 ```bash
 # Get your organization ID
@@ -175,7 +183,28 @@ dws teambition delete-task --user-id <id> --task-id <tid> --project-id <pid>
 | `generate-sync-payload` | Generate browser batch-create |
 | `query-task-stats` | Verify sync results |
 
-## Browser API: Stage & Type Changes
+## Browser Automation: opencli (Recommended)
+
+Use `opencli browser` instead of Playwright. It reuses your Chrome login session automatically.
+
+```bash
+# Open project in automation browser
+opencli browser open "https://www.teambition.com/project/<pid>"
+
+# Execute JS in page context (authenticated)
+opencli browser eval "(async () => { ... })()"
+
+# Close automation window
+opencli browser close
+```
+
+| Feature | opencli | Playwright |
+|---------|---------|------------|
+| Auth | Reuses Chrome login | Requires separate login |
+| Setup | npm install -g | pip + browser binary |
+| Speed | Fast (no launch) | Slow (new browser) |
+
+## Browser API: Stage & Type Changes (Legacy Playwright)
 
 DingTalk OpenAPI does NOT support task stage movement or type (templateId) changes. Use the generated browser scripts:
 
@@ -297,3 +326,16 @@ dws plugin dev .
 ## License
 
 MIT
+
+## Important API Limitations
+
+### Task Stage Movement
+The DingTalk OpenAPI does **NOT** support moving tasks between stages/tasklists. The internal Teambition API endpoint (`POST /api/task/update`) is no longer available.
+
+**Recommended approach:**
+1. Create tasks directly in the correct stage using `dws teambition create-task --stage-id <sid>`
+2. For existing tasks, use the Teambition web UI to drag-and-drop tasks between lists
+3. As a last resort, use the delete+recreate workaround (loses task history)
+
+### Task Type Change
+Changing a task's type (`scenariofieldconfigId`) via API is unstable. Set the type at creation time with `create-task --task-type-id <id>`.

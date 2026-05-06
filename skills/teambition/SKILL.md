@@ -14,6 +14,7 @@ cli_version: ">=v1.0.18"
 2. Grant permissions: `qyapi_project`, `Project.Task.Write.All`, `Project.Task.Read.All`
 3. Set env: `DWS_CLIENT_ID` / `DWS_CLIENT_SECRET`
 4. `pip install openpyxl` (for Excel parsing)
+5. `npm install -g @jackwener/opencli` (optional, for browser automation)
 
 ## Commands
 
@@ -145,8 +146,8 @@ dws teambition parse-excel --file-path "研发流程清单.xlsx"
 # Step 2: Create Project
 dws teambition create-project --user-id <id> --name "项目名称"
 
-# Step 3: Setup Task Groups (Browser required)
-# Use Playwright to create 16 stage groups and capture stage IDs
+# Step 3: Setup Task Groups (use opencli browser or F12 console)
+# Use opencli browser eval or dws teambition generate-opencli-setup-payload
 
 # Step 4: Batch Sync
 dws teambition generate-sync-payload \
@@ -253,7 +254,7 @@ dws teambition generate-change-task-type-payload \
 
 ---
 
-## Playwright Automation Reference
+## Browser Automation: opencli (Recommended) / Playwright (Legacy)
 
 ```javascript
 // 1. Navigate
@@ -304,3 +305,10 @@ await page.evaluate(async (taskId, projectId, templateId) => {
 | `0` | Normal (default) |
 | `1` | Urgent |
 | `2` | Critical |
+
+
+## API Limitations
+
+- **Task stage movement**: NOT supported by DingTalk OpenAPI. Use `create-task --stage-id` to place tasks correctly from the start.
+- **Task type change**: Unstable via API. Set `--task-type-id` at creation time.
+- **Task list creation**: Requires browser API (opencli browser eval or F12 console).

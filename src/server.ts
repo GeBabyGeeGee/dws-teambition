@@ -41,6 +41,10 @@ const TOOLS = [
   { name: "generate_sync_payload", description: "生成浏览器批量创建任务的 JS 脚本",
     inputSchema: S({ tasks_json: SS("parse_excel 输出 JSON"), project_id: SS("项目 ID"), tasklist_id: SS("tasklistId"), stage_map_json: SS("stage ID 映射 JSON") }, ["tasks_json", "project_id", "tasklist_id", "stage_map_json"]) },
 
+  // Opencli Setup (NEW)
+  { name: "generate_opencli_setup_payload", description: "生成 opencli 浏览器自动化项目搭建完整流程",
+    inputSchema: S({ project_id: SS("项目 ID"), tasklist_names_json: SS("任务组名称 JSON 数组") }, ["project_id"]) },
+
   // Tasklist & Stage (NEW - Browser API)
   { name: "generate_create_tasklist_payload", description: "创建任务组（含默认列）的浏览器脚本",
     inputSchema: S({ project_id: SS("项目 ID"), name: SS("任务组名称") }, ["project_id", "name"]) },
@@ -153,11 +157,13 @@ const HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<unknow
   generate_sync_payload: sync.handleGenerateSyncPayload,
   query_task_stats: sync.handleQueryTaskStats,
 
+
   // Tasklist & Stage Management
   generate_create_tasklist_payload: payload.handleGenerateCreateTasklistPayload,
   generate_rename_stage_payload: payload.handleGenerateRenameStagePayload,
   generate_delete_tasklist_payload: payload.handleGenerateDeleteTasklistPayload,
   generate_batch_create_tasklists_payload: payload.handleGenerateBatchCreateTasklistsPayload,
+  generate_opencli_setup_payload: payload.handleGenerateOpencliSetupPayload,
 };
 
 // ============================================================================
