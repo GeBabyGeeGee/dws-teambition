@@ -1,514 +1,181 @@
 #!/usr/bin/env node
 /**
- * DWS Teambition Plugin - MCP Stdio Server
- * 
+ * DWS Teambition Plugin - MCP Stdio Server (v0.4.0)
+ *
  * Wraps DingTalk Teambition Project Management APIs as MCP tools.
- * Supports the full Excel→Teambition reproducible workflow:
- *   1. parse_excel    → classify tasks from Excel
- *   2. create_project → setup Teambition project
- *   3. sync_helper    → generate batch-create payload for browser API
- *   4. query_stats    → verify sync results
- * 
- * Auth: Uses DWS_CLIENT_ID / DWS_CLIENT_SECRET environment variables.
- * 
- * Note: Stage-aware task creation requires Teambition browser API
- * (used via Playwright in the workflow). DingTalk API does NOT support
- * stageId/tasklistId assignment.
- * 
- * DWS CLI converts camelCase flags to snake_case params.
- * All tool parameters use snake_case naming.
+ * Auth: DWS_CLIENT_ID / DWS_CLIENT_SECRET environment variables.
  */
-
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFileSync, existsSync } from "fs";
-import { resolve } from "path";
 
-// ---- Configuration ----
+// Project & Org handlers
+import * as project from "./handlers/project.js";
+// Task CRUD + Updates
+import * as tasks from "./handlers/tasks.js";
+// Task types, workflow statuses, project stages
+import * as types from "./handlers/types.js";
+// Excel sync
+import * as sync from "./handlers/sync.js";
+// Browser payload generators (stage/type changes, sync)
+import * as payload from "./lib/payload.js";
 
-const DINGTALK_API = "https://api.dingtalk.com";
-const CLIENT_ID = process.env.DWS_CLIENT_ID || "";
-const CLIENT_SECRET = process.env.DWS_CLIENT_SECRET || "";
+// ============================================================================
+// Tool Definitions (compact to fit MCP buffer limits)
+// ============================================================================
 
-// ---- Token Cache ----
-
-let cachedToken: { token: string; expiresAt: number } | null = null;
-
-async function getAccessToken(): Promise<string> {
-  if (cachedToken && Date.now() < cachedToken.expiresAt - 60_000) {
-    return cachedToken.token;
-  }
-  if (!CLIENT_ID || !CLIENT_SECRET) {
-    throw new Error(
-      "Missing DWS_CLIENT_ID or DWS_CLIENT_SECRET. Set them via:\n" +
-      "  export DWS_CLIENT_ID=<AppKey>\n" +
-      "  export DWS_CLIENT_SECRET=<AppSecret>"
-    );
-  }
-  const res = await fetch(`${DINGTALK_API}/v1.0/oauth2/accessToken`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ appKey: CLIENT_ID, appSecret: CLIENT_SECRET }),
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Failed to get access token: ${res.status} ${body}`);
-  }
-  const data = await res.json() as { accessToken: string; expireIn: number };
-  cachedToken = {
-    token: data.accessToken,
-    expiresAt: Date.now() + data.expireIn * 1000,
-  };
-  return cachedToken.token;
-}
-
-async function apiCall(method: string, path: string, body?: unknown, params?: Record<string, string>): Promise<unknown> {
-  const token = await getAccessToken();
-  let url = `${DINGTALK_API}${path}`;
-  if (params) {
-    const qs = new URLSearchParams(params).toString();
-    url += `?${qs}`;
-  }
-  const res = await fetch(url, {
-    method,
-    headers: {
-      "x-acs-dingtalk-access-token": token,
-      "Content-Type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`API ${method} ${path} failed (${res.status}): ${text}`);
-  }
-  return JSON.parse(text);
-}
-
-// ---- Excel Parsing Logic ----
-
-interface TaskItem {
-  sn: number;
-  content: string;
-  priority: number;
-  note: string;
-  type: string;
-}
-
-function classifyDeliverable(deliverable: string, isKeyNode: boolean): string {
-  if (deliverable.includes("风险") || deliverable.includes("评估")) return "risk";
-  if (deliverable.includes("合同") || deliverable.includes("协议") || deliverable.includes("专利")) return "legal";
-  if (deliverable.includes("变更") || deliverable.includes("ECR")) return "change";
-  if (isKeyNode && (deliverable.includes("评审") || deliverable.includes("确认") || deliverable.includes("签样") || deliverable.includes("报告"))) return "milestone";
-  if (isKeyNode) return "milestone";
-  if (deliverable.includes("设计") || deliverable.includes("图") || deliverable.includes("方案") || deliverable.includes("效果图") || deliverable.includes("原理图")) return "design";
-  if (deliverable.includes("测试") || deliverable.includes("检验") || deliverable.includes("验证") || deliverable.includes("认证")) return "qaqc";
-  if (deliverable.includes("整改") || deliverable.includes("改善")) return "improve";
-  if (deliverable.includes("需求") || deliverable.includes("要求") || deliverable.includes("立项") || deliverable.includes("需求书")) return "requirement";
-  return "task";
-}
-
-function parseExcelRows(rows: string[][]): TaskItem[] {
-  const prefixes: Record<string, string> = {
-    milestone: "[milestone] ", risk: "[risk] ", design: "[design] ", qaqc: "[qaqc] ",
-    requirement: "[requirement] ", legal: "[legal] ", change: "[change] ", improve: "[improve] ", task: "[task] ",
-  };
-  const priorities: Record<string, number> = {
-    milestone: 2, risk: 2, change: 1, qaqc: 1, design: 0, requirement: 0, legal: 0, improve: 0, task: -10,
-  };
-
-  const tasks: TaskItem[] = [];
-  let currentSn = 0;
-  let currentStage = "";
-
-  for (const row of rows) {
-    const [num, stage, inDept, inReq, outDept, owner, reviewer, deliverable, keyNode, notes] = row;
-
-    if (num && /^\d+$/.test(num)) {
-      currentSn = parseInt(num);
-      currentStage = `${num}.${stage}`;
-      tasks.push({
-        sn: currentSn,
-        content: `[milestone] ${currentStage}`,
-        priority: 2,
-        note: `Stage: ${currentStage}`,
-        type: "milestone",
-      });
-    }
-
-    if (deliverable && deliverable.trim()) {
-      const type = classifyDeliverable(deliverable, keyNode === "√");
-      const np: string[] = [];
-      if (inDept) np.push(`Input Dept: ${inDept}`);
-      if (inReq) np.push(`Input: ${inReq}`);
-      if (outDept) np.push(`Output Dept: ${outDept}`);
-      if (owner) np.push(`Owner: ${owner}`);
-      if (reviewer) np.push(`Reviewer: ${reviewer}`);
-      if (keyNode === "√") np.push("KEY MILESTONE: Cannot proceed without passing");
-      if (notes) np.push(`Note: ${notes}`);
-
-      tasks.push({
-        sn: currentSn,
-        content: prefixes[type] + deliverable,
-        priority: priorities[type],
-        note: np.join("\n"),
-        type,
-      });
-    }
-  }
-
-  return tasks;
-}
-
-// ---- Tool Definitions ----
+const S = (p: Record<string, unknown>, r: string[]) => ({ type: "object", properties: p, required: r });
+const SS = (d: string) => ({ type: "string", description: d });
+const NN = (d: string) => ({ type: "number", description: d });
+const AA = (d: string) => ({ type: "array", items: { type: "string" }, description: d });
 
 const TOOLS = [
-  {
-    name: "get_organization",
-    description: "获取当前用户的 Teambition 企业 (Organization) ID",
-    inputSchema: {
-      type: "object",
-      properties: { user_id: { type: "string", description: "钉钉用户 userId" } },
-      required: ["user_id"],
-    },
-  },
-  {
-    name: "create_project",
-    description: "在 Teambition 中创建一个新项目",
-    inputSchema: {
-      type: "object",
-      properties: {
-        user_id: { type: "string", description: "操作者的钉钉 userId" },
-        name: { type: "string", description: "项目名称" },
-      },
-      required: ["user_id", "name"],
-    },
-  },
-  {
-    name: "create_task",
-    description: "在指定项目中创建任务（注：DingTalk API 不支持 stageId 分配，任务将进入默认分组）",
-    inputSchema: {
-      type: "object",
-      properties: {
-        user_id: { type: "string", description: "操作者的钉钉 userId" },
-        project_id: { type: "string", description: "项目 ID" },
-        content: { type: "string", description: "任务标题" },
-        executor_id: { type: "string", description: "执行者 userId（可选）" },
-        priority: { type: "number", description: "优先级: -10=低, 0=普通, 1=紧急, 2=非常紧急（可选）" },
-        due_date: { type: "string", description: "截止时间，ISO 8601 格式（可选）" },
-        note: { type: "string", description: "任务备注（可选）" },
-      },
-      required: ["user_id", "project_id", "content"],
-    },
-  },
-  {
-    name: "query_tasks",
-    description: "查询项目中的任务，支持 TQL 筛选",
-    inputSchema: {
-      type: "object",
-      properties: {
-        user_id: { type: "string", description: "操作者的钉钉 userId" },
-        project_id: { type: "string", description: "项目 ID" },
-        query: { type: "string", description: "TQL 查询条件（可选）" },
-        max_results: { type: "number", description: "每页最大数量，默认 50" },
-      },
-      required: ["user_id", "project_id"],
-    },
-  },
-  {
-    name: "archive_task",
-    description: "归档任务（移动到回收站）",
-    inputSchema: {
-      type: "object",
-      properties: {
-        user_id: { type: "string", description: "操作者的钉钉 userId" },
-        task_id: { type: "string", description: "任务 ID" },
-      },
-      required: ["user_id", "task_id"],
-    },
-  },
-  {
-    name: "delete_task",
-    description: "删除任务",
-    inputSchema: {
-      type: "object",
-      properties: {
-        user_id: { type: "string", description: "操作者的钉钉 userId" },
-        task_id: { type: "string", description: "任务 ID" },
-        project_id: { type: "string", description: "所属项目 ID" },
-      },
-      required: ["user_id", "task_id", "project_id"],
-    },
-  },
-  {
-    name: "parse_excel",
-    description: "解析 Excel 研发流程文件，自动分类任务（milestone/risk/design/qaqc/legal/change/improve/requirement/task）。返回 JSON 格式的任务列表，可直接用于同步。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        file_path: { type: "string", description: "Excel 文件的绝对路径" },
-        sheet_name: { type: "string", description: "工作表名称（可选，默认第一个sheet）" },
-      },
-      required: ["file_path"],
-    },
-  },
-  {
-    name: "generate_sync_payload",
-    description: "根据 parse_excel 的输出，生成用于浏览器 API 批量创建的 JS payload 脚本。包含 stage_id_map 占位符，需用实际 stage ID 替换后执行。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        tasks_json: { type: "string", description: "parse_excel 输出的 JSON 字符串" },
-        project_id: { type: "string", description: "Teambition 项目 ID" },
-        tasklist_id: { type: "string", description: "Teambition 默认分组的 tasklistId" },
-        stage_map_json: { type: "string", description: "JSON mapping of stage numbers to stage IDs, e.g. {\"1\":\"xxx\",\"2\":\"yyy\"}" },
-      },
-      required: ["tasks_json", "project_id", "tasklist_id", "stage_map_json"],
-    },
-  },
-  {
-    name: "query_task_stats",
-    description: "查询项目各分组的任务统计，验证同步结果",
-    inputSchema: {
-      type: "object",
-      properties: {
-        user_id: { type: "string", description: "操作者的钉钉 userId" },
-        project_id: { type: "string", description: "项目 ID" },
-      },
-      required: ["user_id", "project_id"],
-    },
-  },
+  // === 28 TOOLS (DWS CLI display limit) ===
+
+  // Excel Sync
+  { name: "parse_excel", description: "解析 Excel 研发流程文件，自动分类",
+    inputSchema: S({ file_path: SS("Excel 文件路径"), sheet_name: SS("工作表名") }, ["file_path"]) },
+  { name: "generate_sync_payload", description: "生成浏览器批量创建任务的 JS 脚本",
+    inputSchema: S({ tasks_json: SS("parse_excel 输出 JSON"), project_id: SS("项目 ID"), tasklist_id: SS("tasklistId"), stage_map_json: SS("stage ID 映射 JSON") }, ["tasks_json", "project_id", "tasklist_id", "stage_map_json"]) },
+
+  // Opencli Setup (NEW)
+  { name: "generate_opencli_setup_payload", description: "生成 opencli 浏览器自动化项目搭建完整流程",
+    inputSchema: S({ project_id: SS("项目 ID"), tasklist_names_json: SS("任务组名称 JSON 数组") }, ["project_id"]) },
+
+  // Tasklist & Stage (NEW - Browser API)
+  { name: "generate_create_tasklist_payload", description: "创建任务组（含默认列）的浏览器脚本",
+    inputSchema: S({ project_id: SS("项目 ID"), name: SS("任务组名称") }, ["project_id", "name"]) },
+  { name: "generate_rename_stage_payload", description: "重命名阶段列的浏览器脚本",
+    inputSchema: S({ stage_id: SS("stage ID"), new_name: SS("新名称") }, ["stage_id", "new_name"]) },
+  { name: "generate_delete_tasklist_payload", description: "删除任务组（不可逆）的浏览器脚本",
+    inputSchema: S({ tasklist_id: SS("tasklist ID") }, ["tasklist_id"]) },
+
+  // Project & Org
+  { name: "get_organization", description: "获取 Teambition 企业 Organization ID",
+    inputSchema: S({ user_id: SS("钉钉 userId") }, ["user_id"]) },
+  { name: "create_project", description: "创建新项目",
+    inputSchema: S({ user_id: SS("userId"), name: SS("项目名称") }, ["user_id", "name"]) },
+  { name: "get_project_members", description: "查询项目成员列表",
+    inputSchema: S({ user_id: SS("userId"), project_id: SS("项目 ID"), max_results: NN("每页数量") }, ["user_id", "project_id"]) },
+  { name: "add_project_members", description: "批量添加项目成员（最多10个）",
+    inputSchema: S({ user_id: SS("userId"), project_id: SS("项目 ID"), member_user_ids: AA("用户 userId 列表") }, ["user_id", "project_id", "member_user_ids"]) },
+
+  // Task CRUD
+  { name: "create_task", description: "创建任务：支持标题/执行者/优先级/截止时间/备注/stageId/任务类型",
+    inputSchema: S({ user_id: SS("userId"), project_id: SS("项目 ID"), content: SS("任务标题"),
+      executor_id: SS("执行者 userId"), priority: NN("优先级"), due_date: SS("截止时间"), start_date: SS("开始时间"),
+      note: SS("备注"), stage_id: SS("stage ID"), task_type_id: SS("scenariofieldconfigId"), parent_task_id: SS("父任务 ID"),
+      participants: AA("参与者"), custom_fields: { type: "array", items: { type: "object", properties: { customfield_id: SS(""), customfield_name: SS(""), value: { type: "array", items: { type: "object", properties: { title: SS("") } } } } } },
+    }, ["user_id", "project_id", "content"]) },
+  { name: "get_task", description: "获取任务详情",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), parent_task_id: SS("父任务 ID") }, ["user_id"]) },
+  { name: "query_tasks", description: "查询任务列表（TQL+分页）",
+    inputSchema: S({ user_id: SS("userId"), project_id: SS("项目 ID"), query: SS("TQL"), max_results: NN("每页数量"), next_token: SS("分页游标") }, ["user_id", "project_id"]) },
+  { name: "query_task_stats", description: "查询项目任务统计",
+    inputSchema: S({ user_id: SS("userId"), project_id: SS("项目 ID") }, ["user_id", "project_id"]) },
+
+  // Task Update (Granular)
+  { name: "update_task_content", description: "更新任务标题",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), content: SS("新标题") }, ["user_id", "task_id", "content"]) },
+  { name: "update_task_executor", description: "更新执行者",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), executor_id: SS("新执行者 userId") }, ["user_id", "task_id", "executor_id"]) },
+  { name: "update_task_due_date", description: "更新截止时间",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), due_date: SS("ISO8601") }, ["user_id", "task_id", "due_date"]) },
+  { name: "update_task_start_date", description: "更新开始时间",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), start_date: SS("ISO8601") }, ["user_id", "task_id", "start_date"]) },
+  { name: "update_task_priority", description: "更新优先级",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), priority: NN("-10低 0普通 1紧急 2非常紧急") }, ["user_id", "task_id", "priority"]) },
+  { name: "update_task_note", description: "更新备注",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), note: SS("新备注") }, ["user_id", "task_id", "note"]) },
+  { name: "update_task_workflow_status", description: "更新工作流状态（可标记完成）",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), taskflow_status_id: SS("状态 ID"), note: SS("说明") }, ["user_id", "task_id", "taskflow_status_id"]) },
+  { name: "update_task_custom_fields", description: "更新自定义字段",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), customfield_id: SS(""), customfield_name: SS(""),
+      value: { type: "array", items: { type: "object", properties: { title: SS("") } } } }, ["user_id", "task_id", "value"]) },
+  { name: "update_task_participants", description: "更新参与者",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), involve_members: AA("完整列表"), add_involvers: AA("添加"), del_involvers: AA("删除") }, ["user_id", "task_id"]) },
+  { name: "update_task_batch", description: "批量更新任务多个字段",
+    inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), content: SS(""), executor_id: SS(""), due_date: SS(""), start_date: SS(""), priority: NN(""), note: SS(""), taskflow_status_id: SS("") }, ["user_id", "task_id"]) },
+
+  // Stage & Type (Browser API)
+  { name: "generate_move_task_stage_payload", description: "移动任务到不同 stage 的浏览器脚本",
+    inputSchema: S({ task_id: SS("任务 ID"), project_id: SS("项目 ID"), target_stage_id: SS("目标 stage ID"), target_tasklist_id: SS("目标 tasklist ID") }, ["task_id", "project_id", "target_stage_id"]) },
+  { name: "generate_change_task_type_payload", description: "修改任务类型的浏览器脚本",
+    inputSchema: S({ task_id: SS("任务 ID"), project_id: SS("项目 ID"), template_id: SS("scenariofieldconfigId") }, ["task_id", "project_id", "template_id"]) },
+
+  // Lifecycle
+  { name: "archive_task", description: "归档任务", inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID") }, ["user_id", "task_id"]) },
+  { name: "delete_task", description: "永久删除任务", inputSchema: S({ user_id: SS("userId"), task_id: SS("任务 ID"), project_id: SS("项目 ID") }, ["user_id", "task_id", "project_id"]) },
+
+  // Query Support
+  { name: "query_task_workflow_statuses", description: "查询项目工作流状态",
+    inputSchema: S({ user_id: SS("userId"), project_id: SS("项目 ID"), query: SS("模糊搜索") }, ["user_id", "project_id"]) },
+  { name: "query_project_stages", description: "查询项目 stage 结构",
+    inputSchema: S({ user_id: SS("userId"), project_id: SS("项目 ID") }, ["user_id", "project_id"]) },
 ];
 
-// ---- Handlers ----
-
-async function handleGetOrganization(args: Record<string, unknown>) {
-  const data = await apiCall("GET", "/v1.0/project/teambition/organizations", undefined, {
-    optUserId: args.user_id as string,
-  });
-  return formatResponse(data);
-}
-
-async function handleCreateProject(args: Record<string, unknown>) {
-  const data = await apiCall("POST", `/v1.0/project/users/${args.user_id}/projects`, { name: args.name });
-  return formatResponse(data);
-}
-
-async function handleCreateTask(args: Record<string, unknown>) {
-  const body: Record<string, unknown> = { content: args.content, projectId: args.project_id };
-  if (args.executor_id) body.executorId = args.executor_id;
-  if (args.priority !== undefined) body.priority = args.priority;
-  if (args.due_date) body.dueDate = args.due_date;
-  if (args.note) body.note = args.note;
-  const data = await apiCall("POST", `/v1.0/project/users/${args.user_id}/tasks`, body);
-  return formatResponse(data);
-}
-
-async function handleQueryTasks(args: Record<string, unknown>) {
-  const params: Record<string, string> = {};
-  if (args.query) params.query = args.query as string;
-  if (args.max_results) params.maxResults = String(args.max_results);
-  else params.maxResults = "50";
-  const data = await apiCall("GET",
-    `/v1.0/project/users/${args.user_id}/projectIds/${args.project_id}/tasks`, undefined, params);
-  return formatResponse(data);
-}
-
-async function handleArchiveTask(args: Record<string, unknown>) {
-  const data = await apiCall("POST", `/v1.0/project/users/${args.user_id}/tasks/${args.task_id}/archive`, {});
-  return formatResponse(data);
-}
-
-async function handleDeleteTask(args: Record<string, unknown>) {
-  const data = await apiCall("DELETE", `/v1.0/project/users/${args.user_id}/tasks/${args.task_id}`, undefined,
-    { projectId: args.project_id as string });
-  return formatResponse(data);
-}
-
-async function handleParseExcel(args: Record<string, unknown>) {
-  const filePath = args.file_path as string;
-  const absPath = resolve(filePath);
-
-  if (!existsSync(absPath)) {
-    return errorResponse(`File not found: ${absPath}`);
-  }
-
-  const { execSync } = await import("child_process");
-
-  // Write Python script to temp file (avoids command-line escaping issues)
-  const { tmpdir } = await import("os");
-  const tmpScript = `${tmpdir()}/teambition_parse_${Date.now()}.py`;
-  const { writeFileSync, unlinkSync } = await import("fs");
-  
-  const pythonSrc = `import openpyxl, json, sys
-sys.stdout.reconfigure(encoding='utf-8')
-wb = openpyxl.load_workbook(r"""${absPath}""", data_only=True)
-ws = wb[wb.sheetnames[0]]
-rows = [[str(c) if c is not None else "" for c in r] for r in ws.iter_rows(min_row=1, max_row=ws.max_row, values_only=True)]
-# Skip header row
-data_rows = rows[1:]
-print(json.dumps(data_rows, ensure_ascii=False))`;
-  
-  writeFileSync(tmpScript, pythonSrc, "utf-8");
-
-  try {
-    // Try python3 first, fall back to python
-    let output: string;
-    try {
-      output = execSync(`python3 "${tmpScript}"`, { encoding: "utf-8", timeout: 15000, env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
-    } catch {
-      output = execSync(`python "${tmpScript}"`, { encoding: "utf-8", timeout: 15000, env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
-    }
-    const rows = JSON.parse(output);
-    const tasks = parseExcelRows(rows);
-
-    // Generate summary
-    const typeCounts: Record<string, number> = {};
-    const stageCounts: Record<number, number> = {};
-    for (const t of tasks) {
-      typeCounts[t.type] = (typeCounts[t.type] || 0) + 1;
-      stageCounts[t.sn] = (stageCounts[t.sn] || 0) + 1;
-    }
-
-    return formatResponse({
-      total_tasks: tasks.length,
-      stage_count: Object.keys(stageCounts).length,
-      type_summary: typeCounts,
-      stage_summary: stageCounts,
-      tasks: tasks.map(t => ({
-        sn: t.sn, type: t.type, content: t.content,
-        priority: t.priority, note: t.note,
-      })),
-    });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return errorResponse(`Excel parsing failed: ${msg}. Make sure Python3 and openpyxl are installed (pip install openpyxl).`);
-  } finally {
-    // Cleanup temp script
-    try { unlinkSync(tmpScript); } catch {}
-  }
-}
-
-async function handleGenerateSyncPayload(args: Record<string, unknown>) {
-  const tasks: TaskItem[] = JSON.parse(args.tasks_json as string);
-  const projectId = args.project_id as string;
-  const tasklistId = args.tasklist_id as string;
-  const stageMap: Record<string, string> = JSON.parse(args.stage_map_json as string);
-
-  const jsPayload = `
-// Copy-paste this into browser console (F12) while on Teambition project page
-// Or use with Playwright page.evaluate()
-
-(async () => {
-  const STAGES = ${JSON.stringify(stageMap)};
-  const PID = "${projectId}";
-  const TID = "${tasklistId}";
-  const TASKS = ${JSON.stringify(tasks)};
-
-  let created = 0, errors = 0;
-  for (const t of TASKS) {
-    const stageId = STAGES[t.sn] || Object.values(STAGES)[0];
-    try {
-      await fetch("https://www.teambition.com/api/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content: t.content,
-          _projectId: PID,
-          _tasklistId: TID,
-          _stageId: stageId,
-          priority: t.priority,
-          note: t.note,
-        }),
-      });
-      created++;
-    } catch(e) { errors++; }
-    if (created % 10 === 0) await new Promise(r => setTimeout(r, 300));
-  }
-  console.log(\`Created: \${created}, Errors: \${errors}\`);
-  return { created, errors };
-})();
-`;
-
-  return formatResponse({
-    instructions: "This is a browser-executable script. Use it with Playwright page.evaluate() or paste into browser console while on the Teambition project page.",
-    total_tasks: tasks.length,
-    stage_count: Object.keys(stageMap).length,
-    js_payload: jsPayload,
-  });
-}
-
-async function handleQueryTaskStats(args: Record<string, unknown>) {
-  const userId = args.user_id as string;
-  const projectId = args.project_id as string;
-
-  // Query all tasks via DingTalk API (flat list)
-  const data = await apiCall("GET",
-    `/v1.0/project/users/${userId}/projectIds/${projectId}/tasks`, undefined,
-    { maxResults: "200" });
-
-  const tasks = (data as { result: unknown[] }).result || [];
-  const typeCounts: Record<string, number> = {};
-  const priorityCounts: Record<number, number> = {};
-
-  for (const t of tasks as Record<string, unknown>[]) {
-    const content = (t.content as string) || "";
-    const match = content.match(/^\[(\w+)\]/);
-    const type = match ? match[1] : "unknown";
-    typeCounts[type] = (typeCounts[type] || 0) + 1;
-
-    const pri = (t.priority as number) || 0;
-    priorityCounts[pri] = (priorityCounts[pri] || 0) + 1;
-  }
-
-  return formatResponse({
-    total_tasks: tasks.length,
-    type_summary: typeCounts,
-    priority_summary: priorityCounts,
-    sample_tasks: tasks.slice(0, 5).map((t: Record<string, unknown>) => ({
-      content: t.content,
-      priority: t.priority,
-      is_done: t.isDone,
-    })),
-  });
-}
-
-// ---- Helpers ----
-
-function formatResponse(data: unknown) {
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-}
-
-function errorResponse(msg: string) {
-  return { content: [{ type: "text", text: `Error: ${msg}` }], isError: true };
-}
-
-// ---- Handler Map ----
+// ============================================================================
+// Handler Map
+// ============================================================================
 
 const HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
-  get_organization: handleGetOrganization,
-  create_project: handleCreateProject,
-  create_task: handleCreateTask,
-  query_tasks: handleQueryTasks,
-  archive_task: handleArchiveTask,
-  delete_task: handleDeleteTask,
-  parse_excel: handleParseExcel,
-  generate_sync_payload: handleGenerateSyncPayload,
-  query_task_stats: handleQueryTaskStats,
+  get_organization: project.handleGetOrganization,
+  create_project: project.handleCreateProject,
+  query_projects: project.handleQueryProjects,
+  get_user_join_projects: project.handleGetUserJoinProjects,
+  get_project_members: project.handleGetProjectMembers,
+  add_project_members: project.handleAddProjectMembers,
+  remove_project_members: project.handleRemoveProjectMembers,
+  query_project_status: project.handleQueryProjectStatus,
+  create_task: tasks.handleCreateTask,
+  get_task: tasks.handleGetTask,
+  query_tasks: tasks.handleQueryTasks,
+  update_task_content: tasks.handleUpdateTaskContent,
+  update_task_executor: tasks.handleUpdateTaskExecutor,
+  update_task_due_date: tasks.handleUpdateTaskDueDate,
+  update_task_start_date: tasks.handleUpdateTaskStartDate,
+  update_task_priority: tasks.handleUpdateTaskPriority,
+  update_task_note: tasks.handleUpdateTaskNote,
+  update_task_workflow_status: tasks.handleUpdateTaskWorkflowStatus,
+  update_task_custom_fields: tasks.handleUpdateTaskCustomFields,
+  update_task_participants: tasks.handleUpdateTaskParticipants,
+  update_task_batch: tasks.handleUpdateTaskBatch,
+  generate_move_task_stage_payload: payload.handleGenerateMoveTaskStagePayload,
+  generate_change_task_type_payload: payload.handleGenerateChangeTaskTypePayload,
+  query_task_types: types.handleQueryTaskTypes,
+  generate_query_task_types_payload: types.handleGenerateQueryTaskTypesPayload,
+  generate_create_task_type_payload: types.handleGenerateCreateTaskTypePayload,
+  generate_setup_standard_task_types_payload: types.handleGenerateSetupStandardTaskTypesPayload,
+  archive_task: tasks.handleArchiveTask,
+  delete_task: tasks.handleDeleteTask,
+  query_task_workflow_statuses: types.handleQueryTaskWorkflowStatuses,
+  query_project_stages: types.handleQueryProjectStages,
+  parse_excel: sync.handleParseExcel,
+  generate_sync_payload: sync.handleGenerateSyncPayload,
+  query_task_stats: sync.handleQueryTaskStats,
+
+
+  // Tasklist & Stage Management
+  generate_create_tasklist_payload: payload.handleGenerateCreateTasklistPayload,
+  generate_rename_stage_payload: payload.handleGenerateRenameStagePayload,
+  generate_delete_tasklist_payload: payload.handleGenerateDeleteTasklistPayload,
+  generate_batch_create_tasklists_payload: payload.handleGenerateBatchCreateTasklistsPayload,
+  generate_opencli_setup_payload: payload.handleGenerateOpencliSetupPayload,
 };
 
-// ---- Server ----
+// ============================================================================
+// Server
+// ============================================================================
 
 const server = new Server(
-  { name: "teambition", version: "0.2.0" },
+  { name: "teambition", version: "0.4.0" },
   { capabilities: { tools: {} } }
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   const handler = HANDLERS[name];
